@@ -2,7 +2,6 @@ package filter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -12,10 +11,11 @@ import (
 	"github.com/openliq/cctp-relayer/internal/constant"
 	"github.com/openliq/cctp-relayer/pkg/abi"
 	"github.com/openliq/cctp-relayer/pkg/blockstore"
+	"github.com/openliq/cctp-relayer/pkg/contract"
 	"github.com/openliq/cctp-relayer/pkg/eth"
 	"github.com/openliq/cctp-relayer/pkg/utils"
+	"github.com/pkg/errors"
 	"math/big"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -50,43 +50,60 @@ type filter struct {
 	conn     eth.Conner
 	confirm  *big.Int
 	ab       *abi.Abi
+	msgAbi   *abi.Abi
 	bs       blockstore.BlockStorer
+	call     *contract.Call
 	ch       chan<- *Msg
 	stop     chan struct{}
 }
 
 func New(cfg *Config, conn eth.Conner, l log.Logger, ab *abi.Abi, ch chan<- *Msg) (Filter, error) {
-	bs, err := blockstore.New(blockstore.PathPostfix, cfg.Id)
+	msgAbi, err := abi.New(constant.MessageAbi)
+	if err != nil {
+		return nil, errors.Wrap(err, "new msg abi failed")
+	}
+	ret := &filter{
+		cfg:    cfg,
+		conn:   conn,
+		log:    l.New("chain", cfg.Name),
+		ch:     ch,
+		ab:     ab,
+		msgAbi: msgAbi,
+		stop:   make(chan struct{}),
+	}
+	err = ret.parseConfig()
 	if err != nil {
 		return nil, err
 	}
+	ret.call = contract.NewCall(conn, ret.contract[0], ret.ab)
+	return ret, nil
+}
 
-	bf, ok := new(big.Int).SetString(cfg.BlockConfirmations, 10)
+func (f *filter) parseConfig() error {
+	bs, err := blockstore.New(blockstore.PathPostfix, f.cfg.Id)
+	if err != nil {
+		return err
+	}
+
+	bf, ok := new(big.Int).SetString(f.cfg.BlockConfirmations, 10)
 	if !ok {
-		return nil, errors.New("blockConfirmations format failed")
+		return errors.New("blockConfirmations format failed")
 	}
 
 	events := make([]EventSig, 0)
-	vs := strings.Split(cfg.Events, "|")
+	vs := strings.Split(f.cfg.Events, "|")
 	for _, s := range vs {
 		events = append(events, EventSig(s))
 	}
 	contracts := make([]common.Address, 0)
-	for _, addr := range strings.Split(cfg.Contract, ",") {
+	for _, addr := range strings.Split(f.cfg.Contract, ",") {
 		contracts = append(contracts, common.HexToAddress(addr))
 	}
-	return &filter{
-		cfg:      cfg,
-		conn:     conn,
-		log:      l.New("chain", cfg.Name),
-		contract: contracts,
-		events:   events,
-		confirm:  bf,
-		bs:       bs,
-		ch:       ch,
-		ab:       ab,
-		stop:     make(chan struct{}),
-	}, nil
+	f.contract = contracts
+	f.events = events
+	f.confirm = bf
+	f.bs = bs
+	return nil
 }
 
 func (f *filter) Stop() {
@@ -176,10 +193,9 @@ func (f *filter) mosHandler(latestBlock *big.Int) error {
 		for _, v := range crossId {
 			mintRecipient = append(mintRecipient, v)
 		}
-		f.log.Info("Find a log", "blockHeight", strconv.FormatUint(l.BlockNumber, 10), "txHash", l.TxHash.Hex())
-		f.log.Debug("Find a log", "txHash", l.TxHash.Hex(), "amount", amount, "destChain", destChain, "burnToken", burnToken,
-			"_burnNoce", datas[0].(*big.Int), "_messageNonce", datas[1].(*big.Int), "mintRecipient", common.BytesToAddress(mintRecipient))
-		messages, err := f.findMessageSent(logs)
+		f.log.Info("Find a log", "blockHeight", l.BlockNumber, "txHash", l.TxHash.Hex(), "destChain", destChain)
+		f.log.Debug("Find a log", "txHash", l.TxHash.Hex(), "amount", amount, "burnToken", burnToken, "mintRecipient", common.BytesToAddress(mintRecipient))
+		messages, err := f.findMessageSent(logs, datas[0].(*big.Int), datas[1].(*big.Int))
 		if err != nil {
 			f.log.Error("FindMessageSent failed", "hash", l.TxHash.Hex())
 			continue
@@ -196,7 +212,7 @@ func (f *filter) mosHandler(latestBlock *big.Int) error {
 	return nil
 }
 
-func (f *filter) findMessageSent(logs []types.Log) ([2][]byte, error) {
+func (f *filter) findMessageSent(logs []types.Log, burnNonce, messageNonce *big.Int) ([2][]byte, error) {
 	var ret [2][]byte
 	i := 0
 	for _, l := range logs {
@@ -204,10 +220,24 @@ func (f *filter) findMessageSent(logs []types.Log) ([2][]byte, error) {
 			f.log.Debug("Ignore log, because address not match", "blockNumber", l.BlockNumber, "logTopic", l.Topics[0])
 			continue
 		}
-		ret[i] = l.Data
-		i++
-		if i == 2 {
-			break
+		values, err := f.msgAbi.UnpackValues(constant.AbiMethodMessageSent, l.Data)
+		if err != nil {
+			f.log.Error("UnpackValues failed", "txHash", l.TxHash.Hex())
+			continue
+		}
+		nonce := new(big.Int)
+		err = f.call.Call(constant.AbiMethodGetNonce, &nonce, values[0].([]byte))
+		if err != nil {
+			f.log.Error("To get message nonce failed", "txHash", l.TxHash.Hex(), "err", err)
+			continue
+		}
+		if nonce.Uint64() == burnNonce.Uint64() || nonce.Uint64() == messageNonce.Uint64() {
+			f.log.Info("find nonce same message", "txHash", l.TxHash.Hex(), "msgNonce", nonce, "burnNonce", burnNonce, "messageNonce", messageNonce)
+			ret[i] = values[0].([]byte)
+			i++
+			if i == 2 {
+				break
+			}
 		}
 	}
 

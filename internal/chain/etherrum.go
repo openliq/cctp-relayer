@@ -22,7 +22,6 @@ import (
 type ethereum struct {
 	log        log.Logger
 	cctpClient cctp.Cctper
-	msgAbi     *abi.Abi
 	bridgeAbi  *abi.Abi
 	f          filter.Filter
 	router     router.Router
@@ -78,16 +77,11 @@ func newEthereum(cfg *config.RawChainConfig, l log.Logger, cli cctp.Cctper) (Cha
 		Contract: strings.Split(cfg.Opts.Mcs, ","),
 	})
 
-	msgAbi, err := abi.New(constant.MessageAbi)
-	if err != nil {
-		return nil, errors.Wrap(err, "new msg abi failed")
-	}
 	return &ethereum{
 		f:          f,
 		cfg:        cfg,
 		receive:    ch,
 		cctpClient: cli,
-		msgAbi:     msgAbi,
 		bridgeAbi:  ab,
 		writer:     w,
 		stop:       make(chan struct{}),
@@ -137,20 +131,15 @@ func (e *ethereum) relayer() {
 			var signatures [2][]byte
 			e.log.Info("Receive a new msg", "txHash", receive.TxHash, "token", receive.Token)
 			for idx, m := range receive.Messages {
-				values, err := e.msgAbi.UnpackValues(constant.AbiMethodMessageSent, m)
-				if err != nil {
-					e.log.Error("UnpackValues failed", "txHash", receive.TxHash, "idx", idx)
-					break
-				}
 				// req
-				messageHash := crypto.Keccak256Hash(values[0].([]byte)).Hex()
+				messageHash := crypto.Keccak256Hash(m).Hex()
 				res, err := e.cctpClient.GetProof(messageHash)
 				if err != nil {
 					e.log.Error("GetProof failed", "txHash", receive.TxHash, "message", messageHash)
 					break
 				}
 				e.log.Debug("GetProof", "res", res, "message", messageHash)
-				messages[idx] = values[0].([]byte)
+				messages[idx] = m
 				signatures[idx] = common.Hex2Bytes(strings.TrimPrefix(res.Attestation, "0x"))
 			}
 

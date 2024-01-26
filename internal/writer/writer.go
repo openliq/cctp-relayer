@@ -81,8 +81,8 @@ func (w *writer) exeSwapMsg(m msg.Message) bool {
 			}
 
 			var inputHash interface{}
-			if len(m.Payload) > 3 {
-				inputHash = m.Payload[3]
+			if len(m.Payload) > 1 {
+				inputHash = m.Payload[1]
 			}
 			w.log.Info("Send transaction", "addr", addr, "srcHash", inputHash, "needNonce", needNonce, "nonce", w.conn.Opts().Nonce)
 			mcsTx, err := w.sendTx(&addr, nil, m.Payload[0].([]byte))
@@ -196,7 +196,7 @@ func (w *writer) txStatus(txHash common.Hash) error {
 	for {
 		_, pending, err := w.conn.Client().TransactionByHash(context.Background(), txHash) // Query whether it is on the chain
 		if pending {
-			w.log.Info("Tx is Pending, please wait...", "tx", txHash)
+			w.log.Info("Tx is Pending, please wait...", "tx", txHash.Hex())
 			time.Sleep(constant.QueryRetryInterval)
 			count++
 			if count == 60 {
@@ -210,7 +210,7 @@ func (w *writer) txStatus(txHash common.Hash) error {
 			if count == 60 {
 				return err
 			}
-			w.log.Error("Tx Found failed, please wait...", "tx", txHash, "err", err)
+			w.log.Error("Tx Found failed, please wait...", "txHash", txHash, "err", err)
 			continue
 		}
 		break
@@ -232,7 +232,7 @@ func (w *writer) txStatus(txHash common.Hash) error {
 		}
 
 		if receipt.Status == types.ReceiptStatusSuccessful {
-			w.log.Info("Tx receipt status is success", "hash", txHash)
+			w.log.Info("Tx receipt status is success", "txHash", txHash.Hex())
 			return nil
 		}
 		return fmt.Errorf("txHash(%s), status not success, current status is (%d)", txHash, receipt.Status)

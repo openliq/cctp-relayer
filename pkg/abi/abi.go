@@ -37,7 +37,7 @@ func (a *Abi) UnpackOutput(method string, ret interface{}, output []byte) error 
 		return err
 	}
 
-	if err = outputs.Copy(ret, unpack); err != nil {
+	if err = outputs.Copy(&ret, unpack); err != nil {
 		return err
 	}
 	return nil

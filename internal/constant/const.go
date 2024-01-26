@@ -2,6 +2,7 @@ package constant
 
 import (
 	"errors"
+	"github.com/ethereum/go-ethereum/common"
 	"time"
 )
 
@@ -19,6 +20,7 @@ const (
 	AbiMethodCCTPBridge  = "CCTPBridge"
 	AbiMethodOnReceive   = "onReceive"
 	AbiMethodMessageSent = "MessageSent"
+	AbiMethodGetNonce    = "getNonce"
 )
 
 const (
@@ -52,4 +54,8 @@ var (
 		"80001": "7", // matic
 		"137":   "7",
 	}
+)
+
+var (
+	ZeroAddress = common.HexToAddress("0x0000000000000000000000000000000000000000")
 )
