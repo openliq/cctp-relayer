@@ -215,7 +215,11 @@ func (f *filter) mosHandler(latestBlock *big.Int) error {
 func (f *filter) findMessageSent(logs []types.Log, burnNonce, messageNonce *big.Int) ([2][]byte, error) {
 	var ret [2][]byte
 	i := 0
-	for _, l := range logs {
+	for idx, l := range logs {
+		if len(l.Topics) <= 0 {
+			f.log.Info("Ignore log, because address not match", "blockNumber", l.BlockNumber, "logIdx", idx)
+			continue
+		}
 		if !existTopic(l.Topics[0], []EventSig{"MessageSent(bytes)"}) {
 			f.log.Debug("Ignore log, because address not match", "blockNumber", l.BlockNumber, "logTopic", l.Topics[0])
 			continue
